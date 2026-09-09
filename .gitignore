@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# CUDA / 构建产物
+*.o
+*.so
+*.cubin
+naive_gemm
+build/
+dist/
+
+# 工具与系统
+.ncu-rep
+*.nsys-rep
+.DS_Store
+.ipynb_checkpoints/
