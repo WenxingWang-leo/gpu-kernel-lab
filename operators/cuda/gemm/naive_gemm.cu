@@ -26,17 +26,32 @@
         }                                                                   \
     } while (0)
 
-__global__ void gemm_naive(const float* A, const float* B, float* C,
+__global__ void sgemm_naive(float alpha, float beta, const float* A, const float* B, float* C,
                            int M, int N, int K) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;  // C 的行
-    int col = blockIdx.x * blockDim.x + threadIdx.x;  // C 的列
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (row < M && col < N) {
+    if (x < M && y < N) {
         float acc = 0.0f;
         for (int k = 0; k < K; ++k) {
-            acc += A[row * K + k] * B[k * N + col];
+            acc += A[x * K + k] * B[k * N + y];
         }
-        C[row * N + col] = acc;
+        C[x * N + y] = alpha * acc + beta * C[x * N + y];
+    }
+}
+
+
+__global__ void sgemm_naive_coalesced(float alpha, float beta, const float* A, const float* B, float* C,
+                           int M, int N, int K) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x / blockDim.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y % blockDim.y;
+
+    if (x < M && y < N) {
+        float acc = 0.0f;
+        for (int k = 0; k < K; ++k) {
+            acc += A[x * K + k] * B[k * N + y];
+        }
+        C[x * N + y] = alpha * acc + beta * C[x * N + y];
     }
 }
 
@@ -68,7 +83,7 @@ int main() {
 
     // warmup
     for (int i = 0; i < 3; ++i)
-        gemm_naive<<<grid, block>>>(dA, dB, dC, M, N, K);
+        sgemm_naive<<<grid, block>>>(1.0f, 0.0f, dA, dB, dC, M, N, K);
     CHECK_CUDA(cudaDeviceSynchronize());
 
     cudaEvent_t start, stop;
@@ -77,7 +92,7 @@ int main() {
     CHECK_CUDA(cudaEventRecord(start));
     const int iters = 10;
     for (int i = 0; i < iters; ++i)
-        gemm_naive<<<grid, block>>>(dA, dB, dC, M, N, K);
+        sgemm_naive<<<grid, block>>>(1.0f, 0.0f, dA, dB, dC, M, N, K);
     CHECK_CUDA(cudaEventRecord(stop));
     CHECK_CUDA(cudaEventSynchronize(stop));
 
@@ -90,8 +105,22 @@ int main() {
 
     // TODO(W1 后半周): 在这里加 coalesced 版本，并写与 cuBLAS 的数值校验
     // 提示：cublasSgemm 是列主序，传参时注意
+    // coalesced 版本
+    // warmup
+    for (int i = 0; i < 3; ++i)
+        sgemm_naive_coalesced<<<grid, block>>>(1.0f, 0.0f, dA, dB, dC, M, N, K);
+    CHECK_CUDA(cudaDeviceSynchronize());
 
-    cudaFree(dA); cudaFree(dB); cudaFree(dC);
-    free(hA); free(hB); free(hC);
-    return 0;
+    ms = 0.0f;
+    CHECK_CUDA(cudaEventRecord(start));
+    iters = 10;
+    for (int i = 0; i < iters; ++i)
+        sgemm_naive_coalesced<<<grid, block>>>(1.0f, 0.0f, dA, dB, dC, M, N, K);
+    CHECK_CUDA(cudaEventRecord(stop));
+    CHECK_CUDA(cudaEventSynchronize(stop));
+    CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
+    ms /= iters;
+    
+    tflops = 2.0 * M * N * K / (ms * 1e-3) / 1e12;
+    printf("naive GEMM coalesced  M=N=K=%d  %.3f ms  %.2f TFLOPS\n", M, ms, tflops);
 }
